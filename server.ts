@@ -1,57 +1,86 @@
+import { Hono } from 'hono'
+import { serve } from '@hono/node-server'
+import { serveStatic } from '@hono/node-server/serve-static'
+import { zValidator } from '@hono/zod-validator'
+import { z } from 'zod'
+
 import { APP_BASE_HREF } from '@angular/common';
 import { CommonEngine } from '@angular/ssr';
-import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import bootstrap from './src/main.server';
 
-// The Express app is exported so that it can be used by serverless Functions.
-export function app(): express.Express {
-  const server = express();
+
+const posts = new Hono()
+  .post(
+    '/posts',
+    zValidator(
+      'form',
+      z.object({
+        title: z.string(),
+        body: z.string(),
+      })
+    ),
+    (c) => {
+      return c.json(
+        {
+          ok: true,
+          message: 'Created!',
+        },
+        201
+      )
+    }
+  )
+
+export type PostsType = typeof posts
+
+export function app(): Hono {
+  const app = new Hono()
   const serverDistFolder = dirname(fileURLToPath(import.meta.url));
   const browserDistFolder = resolve(serverDistFolder, '../browser');
   const indexHtml = join(serverDistFolder, 'index.server.html');
 
   const commonEngine = new CommonEngine();
 
-  server.set('view engine', 'html');
-  server.set('views', browserDistFolder);
+  app.get('/hello', (c) => c.json({
+    hello: 'world!',
+  }))
 
-  // Example Express Rest API endpoints
-  // server.get('/api/**', (req, res) => { });
-  // Serve static files from /browser
-  server.get('**', express.static(browserDistFolder, {
-    maxAge: '1y',
-    index: 'index.html',
-  }));
+  app.route('/', posts)
 
-  // All regular routes use the Angular engine
-  server.get('**', (req, res, next) => {
-    const { protocol, originalUrl, baseUrl, headers } = req;
-
-    commonEngine
+  app.get('/', (c) => {
+    const url = c.req.url;
+    return commonEngine
       .render({
         bootstrap,
         documentFilePath: indexHtml,
-        url: `${protocol}://${headers.host}${originalUrl}`,
+        url: `${url}`,
         publicPath: browserDistFolder,
-        providers: [{ provide: APP_BASE_HREF, useValue: baseUrl }],
+        providers: [{ provide: APP_BASE_HREF, useValue: '' }],
       })
-      .then((html) => res.send(html))
-      .catch((err) => next(err));
-  });
+      .then((html) => c.html(html))
+      .catch((err) => {
+        console.error('Error:', err);
+      });
+  })
 
-  return server;
+  app.use('/*', serveStatic({
+    root: './dist/zenn-hono-angular/browser',
+    index: 'index.html',
+    onNotFound: (path, c) => {
+      console.log(`${path} is not found, request to ${c.req.path}`)
+    },
+  }))
+
+  return app;
 }
 
 function run(): void {
-  const port = process.env['PORT'] || 4000;
-
-  // Start up the Node server
   const server = app();
-  server.listen(port, () => {
-    console.log(`Node Express server listening on http://localhost:${port}`);
-  });
+  serve({
+    fetch: server.fetch,
+    port: +process.env['PORT']! || 4000,
+  })
 }
 
 run();
